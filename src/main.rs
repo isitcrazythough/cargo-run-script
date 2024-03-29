@@ -1,4 +1,6 @@
 use arg_parse::Args;
+use error::Error;
+use error::ErrorType;
 use serde_derive::Deserialize;
 use std::collections::HashMap;
 use std::env;
@@ -7,6 +9,7 @@ use std::io::Read;
 use std::process::Command;
 
 mod arg_parse;
+mod error;
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
@@ -33,8 +36,8 @@ impl Metadata {
     }
 }
 
-fn main() -> Result<(), String> {
-    let metadata = parse_toml_file("Cargo.toml");
+fn main() -> Result<(), Error> {
+    let metadata = parse_toml_file("Cargo.toml")?;
 
     let args = arg_parse::parse(env::args().collect()).or_else(|err| {
         metadata.print_script_names();
@@ -42,34 +45,42 @@ fn main() -> Result<(), String> {
     })?;
 
     match metadata.scripts.get(&args.script_name) {
-        Some(script) => {
-            run_script(script.clone(), args);
-            Ok(())
-        }
+        Some(script) => run_script(script.clone(), args),
         None => {
             metadata.print_script_names();
-            Err("script name is invalid".into())
+            Err(Error::new(
+                ErrorType::InvalidScriptName,
+                "script name is invalid",
+            ))
         }
     }
 }
 
-fn parse_toml_file(file_path: &str) -> Metadata {
+fn parse_toml_file(file_path: &str) -> Result<Metadata, Error> {
     let mut f = File::open(file_path).unwrap_or_else(|_| panic!("{} file not found.", file_path));
 
     let mut toml = String::new();
-    f.read_to_string(&mut toml)
-        .unwrap_or_else(|_| panic!("Failed to read {}", file_path));
+    f.read_to_string(&mut toml).or_else(|_| {
+        Err(Error::new(
+            ErrorType::NoToml,
+            format!("Failed to read {}", file_path),
+        ))
+    })?;
 
-    let config: Config = toml::from_str(&toml)
-        .expect("Expected toml file to contain package.metadata.scripts or workspace.metadata.scripts table.");
+    let config: Config = toml::from_str(&toml).or_else(|_| {
+        Err(Error::new(
+            ErrorType::NoScriptInfo,
+            "toml file does not contain package.metadata.scripts or workspace.metadata.scripts table"
+        ))
+    })?;
 
     match config {
-        Config::Workspace { workspace } => workspace.metadata,
-        Config::Package { package } => package.metadata,
+        Config::Workspace { workspace } => Ok(workspace.metadata),
+        Config::Package { package } => Ok(package.metadata),
     }
 }
 
-fn run_script(script: String, args: Args) {
+fn run_script(script: String, args: Args) -> Result<(), Error> {
     let mut shell = if cfg!(target_os = "windows") {
         let mut shell = Command::new("cmd");
         shell.arg("/C");
@@ -94,11 +105,10 @@ fn run_script(script: String, args: Args) {
     let mut child = shell
         .arg(modified_script)
         .spawn()
-        .expect("Failed to run script");
-    match child.wait() {
-        Ok(status) => println!("Finished, status of {}", status),
-        Err(e) => println!("Failed, error: {}", e),
-    }
+        .expect("spawning script failed");
+
+    let exit_status = child.wait().expect("script wasn't running");
+    return Error::parse_exit_status(exit_status);
 }
 
 #[cfg(test)]
@@ -107,15 +117,21 @@ mod tests {
 
     #[test]
     fn test_parse_workspace_toml() {
-        let result = parse_toml_file("test-files/workspace-cargo.toml");
+        let result = parse_toml_file("test-files/workspace-cargo.toml").unwrap();
         assert!(result.scripts.contains_key("hello"));
         assert!(result.scripts.contains_key("goodbye"));
     }
 
     #[test]
     fn test_parse_package_toml() {
-        let result = parse_toml_file("test-files/package-cargo.toml");
+        let result = parse_toml_file("test-files/package-cargo.toml").unwrap();
         assert!(result.scripts.contains_key("hello"));
         assert!(result.scripts.contains_key("goodbye"));
+    }
+
+    #[test]
+    fn test_parse_no_script_info() {
+        let error = parse_toml_file("test-files/no-script-info-cargo.toml").unwrap_err();
+        assert_eq!(error, Error::new(ErrorType::NoScriptInfo, ""));
     }
 }

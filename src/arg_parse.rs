@@ -1,3 +1,6 @@
+use crate::error::Error;
+use crate::error::ErrorType;
+
 use std::fmt::Debug;
 
 #[derive(Debug)]
@@ -10,7 +13,7 @@ pub struct Args {
     pub script_arguments: Vec<String>,
 }
 
-pub fn parse(args: Vec<String>) -> Result<Args, &'static str> {
+pub fn parse(args: Vec<String>) -> Result<Args, Error> {
     let mut iter = args.iter();
 
     let binary_path = iter.next().expect("binary path is always specified");
@@ -26,7 +29,10 @@ pub fn parse(args: Vec<String>) -> Result<Args, &'static str> {
 
     let script_name = match possible_script_name {
         Some(value) => Ok(value),
-        None => Err("script name not specified"),
+        None => Err(Error::new(
+            ErrorType::NoScriptName,
+            "script name not specified",
+        )),
     }?;
 
     Ok(Args {
@@ -50,8 +56,11 @@ mod tests {
             "run-script".into(),
         ];
 
-        let args = parse(incoming_args).unwrap_err();
-        assert_eq!(args, "script name not specified");
+        let args_error = parse(incoming_args).unwrap_err();
+        assert_eq!(
+            args_error,
+            Error::new(ErrorType::NoScriptName, "")
+        );
     }
 
     #[test]
@@ -61,8 +70,11 @@ mod tests {
 
         let incoming_args = vec!["target/debug/cargo-run-script".into()];
 
-        let args = parse(incoming_args).unwrap_err();
-        assert_eq!(args, "script name not specified");
+        let args_error = parse(incoming_args).unwrap_err();
+        assert_eq!(
+            args_error,
+            Error::new(ErrorType::NoScriptName, "")
+        );
     }
 
     #[test]
